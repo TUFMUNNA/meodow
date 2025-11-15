@@ -692,7 +692,7 @@ async def getlogs(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     # Set your bot token here!
-    app = ApplicationBuilder().token("5764888114:REPLACE_WITH_YOUR_TOKEN").build()
+    app = ApplicationBuilder().token("").build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
