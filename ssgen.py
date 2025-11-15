@@ -1,290 +1,305 @@
-#!/usr/bin/env python3
-"""
-ssgen.py - Pyrogram Session String Generator (CLI)
+# ============================================
+# TELEGRAM PYROGRAM SESSION STRING GENERATOR
+# ============================================
+#
+# DESCRIPTION:
+# This app generates a Pyrogram Session String and sends it to
+# Saved Messages of your Telegram account
+# Features:
+# - Create new sessions
+# - Delete existing sessions
+# - List all sessions
+# - Save exported session strings into sessions.json
+# - Move .session files into a sessions/ directory
+# - Interactive menu interface
+#
+# REQUIREMENTS:
+# - Python 3.7+
+# - Pyrogram library
+# - TgCrypto library
+#
+# INSTALLATION:
+# pip install pyrogram tgcrypto
+#
+# HOW TO GET TELEGRAM API KEY:
+# Visit: https://my.telegram.org/apps
+# Create an app and get your API ID and API HASH
+#
+# ============================================
+# MAIN CODE (telegram_pyrogram_manager.py)
+# ============================================
 
-Standalone terminal tool to create Pyrogram session strings one-by-one
-and save them into sessions.json in the same directory (same format expected by account_ops.py).
+"""Generate Pyrogram Session String and send it to
+Saved Messages of your Telegram account
 
-Usage:
-- Place this file next to sessions.json (or it will create sessions.json).
-- Run: python ssgen.py
-- Follow the interactive prompts (API ID, API HASH, phone, code).
-- After successful login you can Save / Skip / Exit. Saved sessions are written into sessions.json.
+requirements:
+- Pyrogram
+- TgCrypto
 
-Requirements:
-  pip install pyrogram tgcrypto
-
-Security:
-- This script uses an in-memory Pyrogram client and only saves the exported session string.
-- It does not save or log codes / passwords.
-
+Get your Telegram API Key from:
+https://my.telegram.org/apps
 """
 import asyncio
 import json
 import os
-import sys
-import tempfile
+import shutil
+import time
 from typing import Dict, Optional
-
 from pyrogram import Client
-from pyrogram.errors import SessionPasswordNeeded, PhoneCodeInvalid, PhoneCodeExpired, ApiIdInvalid, PhoneNumberInvalid
 
+SESSIONS_DIR = "sessions"
 SESSIONS_JSON = "sessions.json"
 
+# You can set these defaults here. If left as None / empty string,
+# the script will require you to enter them manually.
+# Example:
+#   DEFAULT_API_ID = 123456
+#   DEFAULT_API_HASH = "0123456789abcdef0123456789abcdef"
+DEFAULT_API_ID: Optional[int] = None
+DEFAULT_API_HASH: str = ""
 
-def load_saved_sessions() -> Dict[str, str]:
-    if not os.path.exists(SESSIONS_JSON):
-        return {}
-    with open(SESSIONS_JSON, "r", encoding="utf-8") as f:
-        return json.load(f)
+
+def list_sessions():
+    """List all .session files in the current directory and sessions/ directory"""
+    files = []
+    # look in current directory
+    files.extend([f for f in os.listdir('.') if f.endswith('.session')])
+    # also look in sessions directory if present
+    if os.path.isdir(SESSIONS_DIR):
+        for f in os.listdir(SESSIONS_DIR):
+            if f.endswith('.session'):
+                files.append(os.path.join(SESSIONS_DIR, f))
+    return files
 
 
-def save_sessions_atomic(sessions: Dict[str, str]) -> None:
-    fd, tmp_path = tempfile.mkstemp(prefix="sessions_", suffix=".json")
+def delete_session(session_path):
+    """Delete a session file (path or filename)."""
+    if os.path.exists(session_path):
+        os.remove(session_path)
+        print(f"✓ Session '{session_path}' deleted successfully!")
+        return True
+    else:
+        print(f"✗ Session '{session_path}' not found!")
+        return False
+
+
+def load_sessions_json() -> Dict[str, str]:
+    """Load sessions.json if exists, otherwise return empty dict"""
+    if os.path.exists(SESSIONS_JSON):
+        try:
+            with open(SESSIONS_JSON, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"✗ Failed to read {SESSIONS_JSON}: {e}")
+            return {}
+    return {}
+
+
+def save_sessions_json(data: Dict[str, str]):
+    """Write the sessions.json file atomically"""
+    tmp = f"{SESSIONS_JSON}.tmp"
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as tf:
-            json.dump(sessions, tf, indent=2, ensure_ascii=False)
-        os.replace(tmp_path, SESSIONS_JSON)
-    finally:
-        if os.path.exists(tmp_path):
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, SESSIONS_JSON)
+        print(f"✓ {SESSIONS_JSON} updated.")
+    except Exception as e:
+        print(f"✗ Failed to write {SESSIONS_JSON}: {e}")
+        if os.path.exists(tmp):
             try:
-                os.remove(tmp_path)
+                os.remove(tmp)
             except Exception:
                 pass
 
 
-def list_sessions_cli():
-    sessions = load_saved_sessions()
-    if not sessions:
-        print("\n✗ No saved sessions (sessions.json is empty or missing).")
-        return
-    print("\n=== Saved sessions ===")
-    for i, name in enumerate(sessions.keys(), 1):
-        print(f"{i}. {name}")
+def ensure_sessions_dir():
+    """Ensure the sessions directory exists"""
+    if not os.path.isdir(SESSIONS_DIR):
+        os.makedirs(SESSIONS_DIR, exist_ok=True)
 
 
-def delete_session_cli():
-    sessions = load_saved_sessions()
-    if not sessions:
-        print("\n✗ No saved sessions to delete.")
-        return
-    names = list(sessions.keys())
-    print("\n=== Saved sessions ===")
-    for i, name in enumerate(names, 1):
-        print(f"{i}. {name}")
-    choice = input("\nEnter session number to delete (or 'c' to cancel): ").strip()
-    if choice.lower() == "c":
-        print("Cancelled.")
-        return
-    try:
-        idx = int(choice) - 1
-        if 0 <= idx < len(names):
-            name = names[idx]
-            confirm = input(f"Delete session '{name}' from {SESSIONS_JSON}? (y/N): ").strip().lower()
-            if confirm == "y":
-                sessions.pop(name, None)
-                save_sessions_atomic(sessions)
-                print(f"✓ Deleted '{name}'.")
-            else:
-                print("Cancelled.")
-        else:
-            print("✗ Invalid selection.")
-    except ValueError:
-        print("✗ Invalid input.")
-
-
-async def create_session_interactive(api_id: int, api_hash: str, phone: str) -> Optional[str]:
-    phone = phone.strip()
-    if not phone:
-        print("✗ Empty phone number.")
+def move_session_file_to_dir(session_name: str):
+    """
+    If a .session file with session_name exists in cwd, move it into sessions/ directory.
+    session_name parameter may be given as the session name used when creating the Client.
+    """
+    # pyrogram creates a file named "<session_name>.session" when session_name is not ":memory:"
+    filename = f"{session_name}.session"
+    if os.path.exists(filename):
+        ensure_sessions_dir()
+        dest = os.path.join(SESSIONS_DIR, filename)
+        # If destination already exists, append timestamp to avoid overwrite
+        if os.path.exists(dest):
+            base, ext = os.path.splitext(filename)
+            dest = os.path.join(SESSIONS_DIR, f"{base}_{int(time.time())}{ext}")
+        try:
+            shutil.move(filename, dest)
+            print(f"✓ Moved '{filename}' -> '{dest}'")
+            return dest
+        except Exception as e:
+            print(f"✗ Failed to move session file: {e}")
+            return None
+    else:
+        # nothing to move
         return None
 
+
+async def create_new_session():
+    """Create a new session, send session string to Saved Messages and optionally save to sessions.json and sessions/ dir"""
+    print("\n=== Create New Session ===")
+
+    # API ID prompt with default option
+    if DEFAULT_API_ID is not None:
+        api_id_prompt = f"API ID (press Enter to use default {DEFAULT_API_ID}): "
+    else:
+        api_id_prompt = "API ID: "
+
+    api_id_input = input(api_id_prompt).strip()
+    if not api_id_input:
+        if DEFAULT_API_ID is not None:
+            api_id = DEFAULT_API_ID
+            print(f"Using default API ID: {api_id}")
+        else:
+            print("✗ API ID must be provided.")
+            return
+    else:
+        try:
+            api_id = int(api_id_input)
+        except ValueError:
+            print("✗ API ID must be an integer.")
+            return
+
+    # API HASH prompt with default option
+    if DEFAULT_API_HASH:
+        api_hash_prompt = "API HASH (press Enter to use default): "
+    else:
+        api_hash_prompt = "API HASH: "
+
+    api_hash_input = input(api_hash_prompt).strip()
+    if not api_hash_input:
+        if DEFAULT_API_HASH:
+            api_hash = DEFAULT_API_HASH
+            print("Using default API HASH.")
+        else:
+            print("✗ API HASH must be provided.")
+            return
+    else:
+        api_hash = api_hash_input
+
+    session_name = input("Session name (or press Enter for in-memory session): ").strip()
+
+    if not session_name:
+        session_name = ":memory:"
+        print("Using in-memory session (won't be saved to disk)")
+
+    # start client and export session string
     try:
-        async with Client(":memory:", api_id=api_id, api_hash=api_hash) as app:
-            try:
-                sent = await app.send_code(phone)
-            except PhoneNumberInvalid:
-                print("✗ Phone number is invalid.")
-                return None
-            except ApiIdInvalid:
-                print("✗ api_id/api_hash invalid.")
-                return None
-            except Exception as e:
-                print(f"✗ Error sending code: {e}")
-                return None
-
-            code = input("Enter the code you received (or 'c' to cancel): ").strip()
-            if code.lower() == "c":
-                print("Cancelled by user.")
-                return None
-
-            try:
-                await app.sign_in(phone_number=phone, code=code, phone_code_hash=sent.phone_code_hash)
-            except SessionPasswordNeeded:
-                pw = input("Two-step verification password required. Enter password (or 'c' to cancel): ")
-                if pw.strip().lower() == "c":
-                    print("Cancelled by user.")
-                    return None
-                try:
-                    await app.check_password(pw)
-                except Exception as e:
-                    print(f"✗ Password check failed: {e}")
-                    return None
-            except PhoneCodeInvalid:
-                print("✗ The code you entered is invalid.")
-                return None
-            except PhoneCodeExpired:
-                print("✗ The code you entered is expired.")
-                return None
-            except Exception as e:
-                print(f"✗ Sign-in failed: {e}")
-                return None
-
-            try:
-                session_str = await app.export_session_string()
-                return session_str
-            except Exception as e:
-                print(f"✗ Failed to export session string: {e}")
-                return None
+        async with Client(session_name, api_id=api_id, api_hash=api_hash) as app:
+            session_string = await app.export_session_string()
+            # send to Saved Messages
+            await app.send_message(
+                "me",
+                "**Pyrogram Session String**:\n\n"
+                f"`{session_string}`"
+            )
+            print(
+                "✓ Done! Your Pyrogram session string has been sent to "
+                "Saved Messages of your Telegram account!"
+            )
     except Exception as e:
-        print(f"✗ Pyrogram client error: {e}")
-        return None
-
-
-async def flow_create_single():
-    print("\n=== Create a new session ===")
-    try:
-        api_id = int(input("API ID: ").strip())
-    except ValueError:
-        print("✗ API ID must be a number.")
-        return
-    api_hash = input("API HASH: ").strip()
-    phone = input("Phone number (in international format, e.g. +1234567890): ").strip()
-    if not phone:
-        print("✗ Phone required.")
+        print(f"✗ Failed to create client or export session string: {e}")
         return
 
-    print("\nRequesting code and signing in...")
-    session_str = await create_session_interactive(api_id, api_hash, phone)
-    if not session_str:
-        print("✗ Session creation failed or cancelled.")
-        return
+    # Ask user if they want to save exported session into sessions.json
+    # Changed behavior: Press Enter to save (default), type 'n' to skip.
+    save_json = input("Press Enter to save this session string into sessions.json (type 'n' to skip): ").strip().lower()
+    if save_json == "n":
+        print("Skipped saving to sessions.json.")
+    else:
+        sessions_data = load_sessions_json()
+        # Ask for the key/label to store under
+        default_label = session_name if session_name != ":memory:" else f"session_{int(time.time())}"
+        label = input(f"Enter label/key to store in {SESSIONS_JSON} (press Enter to use '{default_label}'): ").strip()
+        if not label:
+            label = default_label
 
-    print("\n✓ Session string generated.")
-    default_name = phone.replace("+", "")
-    name = input(f"Session name to save as (default: {default_name}): ").strip()
-    if not name:
-        name = default_name
-
-    sessions = load_saved_sessions()
-    if name in sessions:
-        confirm = input(f"A session named '{name}' already exists. Overwrite? (y/N): ").strip().lower()
-        if confirm != "y":
-            print("Skipped saving.")
-            return
-
-    sessions[name] = session_str
-    save_sessions_atomic(sessions)
-    print(f"✓ Saved session '{name}' into {SESSIONS_JSON}.")
-
-
-async def flow_from_file():
-    print("\n=== Create sessions from a phone list file ===")
-    try:
-        api_id = int(input("API ID: ").strip())
-    except ValueError:
-        print("✗ API ID must be a number.")
-        return
-    api_hash = input("API HASH: ").strip()
-
-    path = input("Path to phone list file (one phone per line, international format): ").strip()
-    if not os.path.exists(path):
-        print("✗ File not found.")
-        return
-
-    with open(path, "r", encoding="utf-8") as f:
-        phones = [line.strip() for line in f if line.strip()]
-
-    if not phones:
-        print("✗ No phone numbers found in file.")
-        return
-
-    print(f"\nFound {len(phones)} numbers. Processing one-by-one. For each generated session you'll be asked: Save / Skip / Exit.")
-    sessions = load_saved_sessions()
-
-    for i, phone in enumerate(phones, start=1):
-        print("\n" + "-" * 50)
-        print(f"({i}/{len(phones)}) Processing: {phone}")
-        session_str = await create_session_interactive(api_id, api_hash, phone)
-        if not session_str:
-            print("Session creation failed or cancelled for this number.")
-            action = input("Type 's' to skip to next, or 'x' to exit: ").strip().lower()
-            if action == "x":
-                print("Exiting batch process.")
-                break
+        # If the label exists, confirm overwrite
+        if label in sessions_data:
+            confirm = input(f"Label '{label}' already exists in {SESSIONS_JSON}. Overwrite? (y/N): ").strip().lower()
+            if confirm != "y":
+                print("✗ Aborted saving to sessions.json.")
             else:
-                continue
-
-        print("\n✓ Session generated.")
-        default_name = phone.replace("+", "")
-        while True:
-            action = input("Choose: [1] Save  [2] Skip  [3] Exit   (enter 1/2/3) : ").strip()
-            if action == "1":
-                name = input(f"Session name to save as (default: {default_name}): ").strip()
-                if not name:
-                    name = default_name
-                if name in sessions:
-                    confirm = input(f"Session '{name}' exists. Overwrite? (y/N): ").strip().lower()
-                    if confirm != "y":
-                        print("Not overwritten. Choose another name or skip.")
-                        continue
-                sessions[name] = session_str
-                save_sessions_atomic(sessions)
-                print(f"✓ Saved session '{name}' into {SESSIONS_JSON}.")
-                break
-            elif action == "2":
-                print("Skipped saving this session.")
-                break
-            elif action == "3":
-                print("Exiting batch processing by user request.")
-                return
-            else:
-                print("Invalid choice. Enter 1, 2, or 3.")
-
-    print("\nBatch processing finished.")
-
-
-def main_menu():
-    loop = asyncio.get_event_loop()
-    while True:
-        print("\n" + "=" * 60)
-        print("Pyrogram Session String Generator - ssgen")
-        print("=" * 60)
-        print("1. Create a new session (interactive)")
-        print("2. Create sessions from phone list file (one-by-one, interactive save/skip)")
-        print("3. List saved sessions (sessions.json)")
-        print("4. Delete saved session (from sessions.json)")
-        print("5. Exit")
-        print("=" * 60)
-        choice = input("Select an option (1-5): ").strip()
-        if choice == "1":
-            loop.run_until_complete(flow_create_single())
-        elif choice == "2":
-            loop.run_until_complete(flow_from_file())
-        elif choice == "3":
-            list_sessions_cli()
-        elif choice == "4":
-            delete_session_cli()
-        elif choice == "5":
-            print("Goodbye.")
-            return
+                sessions_data[label] = session_string
+                save_sessions_json(sessions_data)
         else:
-            print("✗ Invalid option. Choose 1-5.")
+            sessions_data[label] = session_string
+            save_sessions_json(sessions_data)
+
+    # If a file-backed session was created, move it to sessions/ directory
+    if session_name != ":memory:":
+        moved = move_session_file_to_dir(session_name)
+        if moved:
+            print(f"✓ Session file saved to '{moved}'")
+        else:
+            # It's possible pyrogram didn't create a file (e.g. when using custom file name or weird error)
+            print("Note: no .session file was found to move.")
+
+
+async def main():
+    while True:
+        print("\n" + "=" * 50)
+        print("TELEGRAM PYROGRAM SESSION MANAGER")
+        print("=" * 50)
+        print("1. Create new session")
+        print("2. Delete existing session")
+        print("3. List all sessions")
+        print("4. Exit")
+        print("=" * 50)
+
+        choice = input("Select an option (1-4): ").strip()
+
+        if choice == "1":
+            await create_new_session()
+
+        elif choice == "2":
+            sessions = list_sessions()
+            if not sessions:
+                print("\n✗ No session files found!")
+            else:
+                print("\n=== Available Sessions ===")
+                for i, session in enumerate(sessions, 1):
+                    print(f"{i}. {session}")
+
+                try:
+                    session_choice = input("\nEnter session number to delete (or 'c' to cancel): ").strip()
+                    if session_choice.lower() == "c":
+                        continue
+                    session_idx = int(session_choice) - 1
+                    if 0 <= session_idx < len(sessions):
+                        confirm = input(f"Are you sure you want to delete '{sessions[session_idx]}'? (y/n): ").strip().lower()
+                        if confirm == "y":
+                            delete_session(sessions[session_idx])
+                    else:
+                        print("✗ Invalid selection!")
+                except ValueError:
+                    print("✗ Invalid input!")
+
+        elif choice == "3":
+            sessions = list_sessions()
+            if not sessions:
+                print("\n✗ No session files found!")
+            else:
+                print("\n=== Available Sessions ===")
+                for i, session in enumerate(sessions, 1):
+                    print(f"{i}. {session}")
+
+        elif choice == "4":
+            print("\nGoodbye!")
+            break
+
+        else:
+            print("\n✗ Invalid option! Please select 1-4.")
 
 
 if __name__ == "__main__":
-    try:
-        main_menu()
-    except KeyboardInterrupt:
-        print("\nInterrupted. Exiting.")
-        sys.exit(0)
+    asyncio.run(main())
